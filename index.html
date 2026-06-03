@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Belenis · Notes de frais</title>
+
+<!-- ===== Installable sur l'écran d'accueil (iOS + Android) ===== -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Notes de frais" />
+<meta name="theme-color" content="#1E3A34" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%231E3A34'/%3E%3Ctext x='90' y='120' font-family='Georgia,serif' font-size='96' fill='%23C97B3B' text-anchor='middle'%3EB%3C/text%3E%3C/svg%3E" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- MSAL : authentification Microsoft (OneDrive / Excel via Graph) -->
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+
+<style>
+  :root{
+    --bg:#F4F1EA; --ink:#1B1E1C; --muted:#6B6F6A; --surface:#FFFFFF;
+    --line:#E4DECF; --line-strong:#D6CEBA;
+    --primary:#1E3A34; --primary-soft:#2C4F47; --accent:#C97B3B; --accent-soft:#E9C9A6;
+    --ok:#2E7D5B; --ok-bg:#E6F1EA; --danger:#B3452F; --danger-bg:#F6E4DF;
+    --radius:16px; --shadow:0 1px 2px rgba(27,30,28,.05), 0 8px 24px rgba(27,30,28,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"Public Sans",system-ui,sans-serif; font-size:16px; line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    padding-bottom:env(safe-area-inset-bottom);
+    background-image:radial-gradient(circle at 18% -10%, rgba(201,123,59,.06), transparent 40%);
+  }
+  .wrap{max-width:560px; margin:0 auto; min-height:100dvh; display:flex; flex-direction:column}
+
+  /* Header */
+  header{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:calc(env(safe-area-inset-top) + 16px) 18px 16px;
+    background:var(--primary); color:#F4F1EA; position:sticky; top:0; z-index:20;
+  }
+  .brand{display:flex; flex-direction:column; line-height:1.1}
+  .brand .name{font-family:"Fraunces",serif; font-weight:600; font-size:21px; letter-spacing:.2px}
+  .brand .sub{font-size:12px; color:#A9C2B9; letter-spacing:.4px; text-transform:uppercase}
+  .who{display:flex; align-items:center; gap:8px; font-size:13px}
+  .avatar{width:34px;height:34px;border-radius:50%; background:var(--accent); color:#1B1E1C;
+    display:grid; place-items:center; font-weight:700; font-size:14px}
+  .iconbtn{background:transparent;border:1px solid rgba(244,241,234,.3); color:#F4F1EA;
+    width:38px;height:38px;border-radius:10px;display:grid;place-items:center;cursor:pointer;font-size:18px}
+
+  main{flex:1; padding:18px}
+  .hidden{display:none !important}
+
+  /* Cards */
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); padding:18px; margin-bottom:16px}
+  .card h2{font-family:"Fraunces",serif; font-weight:600; font-size:18px; margin:0 0 4px}
+  .card p.lead{color:var(--muted); margin:0 0 16px; font-size:14px}
+
+  /* Buttons */
+  .btn{display:flex; align-items:center; justify-content:center; gap:10px;
+    width:100%; padding:16px; border-radius:14px; border:none; cursor:pointer;
+    font-family:"Public Sans"; font-weight:600; font-size:16px; transition:transform .08s ease, filter .15s ease}
+  .btn:active{transform:scale(.985)}
+  .btn-primary{background:var(--primary); color:#F4F1EA}
+  .btn-primary:hover{filter:brightness(1.08)}
+  .btn-accent{background:var(--accent); color:#241405}
+  .btn-ghost{background:transparent; color:var(--primary); border:1.5px solid var(--line-strong)}
+  .btn-ok{background:var(--ok); color:#fff}
+  .btn:disabled{opacity:.5; cursor:not-allowed}
+  .btn .ico{font-size:20px; line-height:1}
+  .btn-row{display:flex; gap:10px; margin-top:12px}
+  .btn-row .btn{flex:1}
+
+  /* Capture */
+  .capture-hint{display:flex; gap:10px; align-items:center; color:var(--muted); font-size:13px; margin-top:14px}
+  .preview{margin-top:16px; border:1px dashed var(--line-strong); border-radius:14px; padding:14px; text-align:center}
+  .preview img{max-width:100%; max-height:260px; border-radius:10px; box-shadow:var(--shadow)}
+  .pdfchip{display:inline-flex; gap:10px; align-items:center; background:var(--bg); padding:12px 16px; border-radius:12px; font-weight:600}
+
+  /* Form */
+  .field{margin-bottom:14px}
+  .field label{display:block; font-size:13px; font-weight:600; color:var(--muted); margin-bottom:6px}
+  .field label .auto{color:var(--accent); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-left:6px}
+  .field label .req{color:var(--danger); font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin-left:6px}
+  input,select,textarea{
+    width:100%; padding:13px 14px; border:1.5px solid var(--line-strong); border-radius:12px;
+    font-family:"Public Sans"; font-size:16px; background:#fff; color:var(--ink)}
+  input:focus,select:focus,textarea:focus{outline:none; border-color:var(--primary); box-shadow:0 0 0 3px rgba(30,58,52,.12)}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .grid3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px}
+  .switch{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px;
+    background:var(--bg); border-radius:12px; margin-bottom:14px}
+  .switch span{font-weight:600; font-size:14px}
+  .switch small{display:block; color:var(--muted); font-weight:400; font-size:12px}
+  .toggle{position:relative; width:52px; height:30px; flex:0 0 auto}
+  .toggle input{position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer}
+  .toggle .track{position:absolute; inset:0; background:var(--line-strong); border-radius:30px; transition:.2s}
+  .toggle .knob{position:absolute; top:3px; left:3px; width:24px; height:24px; background:#fff; border-radius:50%; transition:.2s; box-shadow:0 1px 3px rgba(0,0,0,.2)}
+  .toggle input:checked ~ .track{background:var(--ok)}
+  .toggle input:checked ~ .knob{transform:translateX(22px)}
+
+  .euro{position:relative}
+  .euro::after{content:"€"; position:absolute; right:14px; top:50%; transform:translateY(-50%); color:var(--muted); font-weight:600; pointer-events:none}
+  .euro input{padding-right:30px}
+
+  /* States / banners */
+  .banner{border-radius:12px; padding:14px 16px; font-size:14px; margin-bottom:16px; display:flex; gap:10px; align-items:flex-start}
+  .banner-ok{background:var(--ok-bg); color:#1c4d38}
+  .banner-warn{background:var(--danger-bg); color:#7a2e1f}
+  .banner-info{background:#EAF0EE; color:#23433b}
+  .spinner{width:18px;height:18px;border:2.5px solid rgba(244,241,234,.4);border-top-color:#F4F1EA;border-radius:50%;animation:spin .7s linear infinite}
+  .btn-primary .spinner,.btn-ok .spinner{border-color:rgba(255,255,255,.4);border-top-color:#fff}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .loading-block{text-align:center; padding:30px 10px; color:var(--muted)}
+  .loading-block .spinner{margin:0 auto 14px; width:34px;height:34px;border-color:rgba(30,58,52,.18);border-top-color:var(--primary)}
+
+  /* Success screen */
+  .done{text-align:center; padding:20px 6px}
+  .done .check{width:72px;height:72px;border-radius:50%;background:var(--ok-bg);color:var(--ok);
+    display:grid;place-items:center;font-size:38px;margin:0 auto 16px}
+  .done h2{font-family:"Fraunces",serif; font-size:22px; margin:0 0 6px}
+  .recap{text-align:left; background:var(--bg); border-radius:12px; padding:14px 16px; margin:16px 0; font-size:14px}
+  .recap div{display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--line)}
+  .recap div:last-child{border:none}
+  .recap b{font-weight:600}
+
+  /* Settings */
+  .settings-row{font-size:13px; padding:10px 0; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:10px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px}
+  .dot.green{background:var(--ok)} .dot.red{background:var(--danger)}
+  code{background:var(--bg); padding:2px 6px; border-radius:6px; font-size:12px; word-break:break-all}
+  .idbox{background:var(--bg); border-radius:10px; padding:12px; margin-top:10px; font-size:12px; line-height:1.7}
+  footer{padding:14px 18px calc(env(safe-area-inset-bottom) + 14px); text-align:center; color:var(--muted); font-size:12px}
+  .link{color:var(--primary); text-decoration:underline; cursor:pointer; background:none; border:none; font-size:inherit; font-family:inherit; padding:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <span class="name">Belenis</span>
+      <span class="sub">Notes de frais</span>
+    </div>
+    <div class="who">
+      <div id="userZone"></div>
+      <button class="iconbtn" id="settingsBtn" title="Réglages">⚙︎</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ÉCRAN : connexion -->
+    <section id="screen-login" class="card hidden">
+      <h2>Connexion</h2>
+      <p class="lead">Connecte-toi avec ton compte Microsoft Belenis pour enregistrer tes factures dans le OneDrive partagé.</p>
+      <button class="btn btn-primary" id="loginBtn"><span class="ico">🔐</span> Se connecter avec Microsoft</button>
+    </section>
+
+    <!-- ÉCRAN : configuration manquante -->
+    <section id="screen-config" class="card hidden">
+      <div class="banner banner-warn">⚠️ L'application n'est pas encore configurée. Ouvre les réglages ⚙︎ pour renseigner le relais et le OneDrive (voir le guide d'installation).</div>
+      <button class="btn btn-ghost" id="openSettingsFromConfig">Ouvrir les réglages</button>
+    </section>
+
+    <!-- ÉCRAN : capture -->
+    <section id="screen-capture" class="card hidden">
+      <h2>Nouvelle facture</h2>
+      <p class="lead">Photographie le justificatif ou choisis un fichier (image ou PDF).</p>
+      <button class="btn btn-accent" id="photoBtn"><span class="ico">📷</span> Photographier</button>
+      <div class="btn-row">
+        <button class="btn btn-ghost" id="fileBtn"><span class="ico">📎</span> Choisir un fichier</button>
+      </div>
+      <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden" />
+      <input type="file" id="fileInput" accept="image/*,application/pdf" class="hidden" />
+
+      <div id="previewZone" class="hidden">
+        <div class="preview" id="preview"></div>
+        <button class="btn btn-primary" id="analyzeBtn" style="margin-top:16px"><span class="ico">✨</span> Analyser la facture</button>
+        <button class="link" id="cancelFileBtn" style="display:block;margin:14px auto 0">Changer de fichier</button>
+      </div>
+      <div class="capture-hint">🔒 La facture reste privée — elle n'est lue que le temps de l'analyse.</div>
+    </section>
+
+    <!-- ÉCRAN : analyse en cours -->
+    <section id="screen-analyzing" class="card hidden">
+      <div class="loading-block">
+        <div class="spinner"></div>
+        <div>Lecture de la facture…</div>
+        <small>Extraction de la date, du fournisseur et des montants</small>
+      </div>
+    </section>
+
+    <!-- ÉCRAN : formulaire -->
+    <section id="screen-form" class="hidden">
+      <div class="card">
+        <h2>Vérifie et complète</h2>
+        <p class="lead">Les champs en <b style="color:var(--accent)">auto</b> ont été lus sur la facture. Corrige si besoin, puis ajoute la description et la rubrique.</p>
+        <div id="analyzeBanner"></div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Date <span class="auto">auto</span></label>
+            <input type="text" id="f_date" placeholder="JJ/MM/AAAA" inputmode="numeric" />
+          </div>
+          <div class="field">
+            <label>Année <span class="auto">auto</span></label>
+            <input type="text" id="f_annee" inputmode="numeric" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Fournisseur <span class="auto">auto</span></label>
+          <input type="text" id="f_fournisseur" placeholder="Nom du fournisseur" />
+        </div>
+
+        <div class="grid3">
+          <div class="field euro">
+            <label>Montant HT <span class="auto">auto</span></label>
+            <input type="text" id="f_ht" inputmode="decimal" placeholder="0,00" />
+          </div>
+          <div class="field euro">
+            <label>TVA <span class="auto">auto</span></label>
+            <input type="text" id="f_tva" inputmode="decimal" placeholder="0,00" />
+          </div>
+          <div class="field euro">
+            <label>TTC <span class="auto">auto</span></label>
+            <input type="text" id="f_ttc" inputmode="decimal" placeholder="0,00" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Description <span class="req">à saisir</span></label>
+          <input type="text" id="f_designation" placeholder="Ex. : Abonnement Claude" />
+        </div>
+
+        <div class="field">
+          <label>Rubrique comptable <span class="req">à saisir</span></label>
+          <select id="f_categorie"></select>
+        </div>
+
+        <div class="grid2">
+          <div class="field">
+            <label>Lieu</label>
+            <input type="text" id="f_lieu" value="Siège" />
+          </div>
+          <div class="field">
+            <label>Statut</label>
+            <select id="f_statut"><option>Payé</option><option>À payer</option></select>
+          </div>
+        </div>
+
+        <div class="switch">
+          <div><span>Justificatif à récupérer en ligne</span>
+            <small>Abonnement type Google, Claude… (colonne « Oui »)</small></div>
+          <label class="toggle"><input type="checkbox" id="f_recup" /><span class="track"></span><span class="knob"></span></label>
+        </div>
+
+        <button class="btn btn-ok" id="saveBtn"><span class="ico">💾</span> Enregistrer</button>
+        <button class="link" id="cancelFormBtn" style="display:block;margin:14px auto 0">Annuler</button>
+      </div>
+    </section>
+
+    <!-- ÉCRAN : succès -->
+    <section id="screen-done" class="card hidden">
+      <div class="done">
+        <div class="check">✓</div>
+        <h2>Facture enregistrée</h2>
+        <p class="lead" id="doneSub">PDF rangé dans OneDrive et ligne ajoutée au suivi.</p>
+        <div class="recap" id="doneRecap"></div>
+        <button class="btn btn-primary" id="newBtn"><span class="ico">＋</span> Nouvelle facture</button>
+      </div>
+    </section>
+
+    <!-- ÉCRAN : réglages -->
+    <section id="screen-settings" class="card hidden">
+      <h2>Réglages & diagnostic</h2>
+      <p class="lead">État de la configuration (à renseigner dans le code, en haut du fichier).</p>
+      <div id="cfgStatus"></div>
+
+      <h2 style="margin-top:22px; font-size:16px">Obtenir les identifiants OneDrive</h2>
+      <p class="lead">À faire une seule fois, connecté avec le compte <b>propriétaire</b> du dossier partagé. Indique les chemins, puis copie les identifiants obtenus dans le code.</p>
+      <div class="field"><label>Chemin de l'Excel de suivi</label>
+        <input type="text" id="path_xlsx" placeholder="/Comptabilité/Suivi_depenses.xlsx" /></div>
+      <div class="field"><label>Chemin du dossier des PDF</label>
+        <input type="text" id="path_folder" placeholder="/Comptabilité/Factures" /></div>
+      <button class="btn btn-ghost" id="resolveBtn">Récupérer les identifiants</button>
+      <div id="idResult"></div>
+
+      <button class="btn btn-primary" id="closeSettingsBtn" style="margin-top:20px">Retour</button>
+    </section>
+  </main>
+
+  <footer>Belenis · Notes de frais — <button class="link" id="signoutLink">Se déconnecter</button></footer>
+</div>
+
+<script>
+/* =================================================================== */
+/* ⚙️  CONFIGURATION  —  à compléter (voir GUIDE-installation.md)        */
+/* =================================================================== */
+const CONFIG = {
+
+  /* 1) AUTHENTIFICATION MICROSOFT (app registration Azure) ------------ */
+  clientId : "VOTRE_CLIENT_ID",                 // ID d'application (app registration)
+  tenantId : "VOTRE_TENANT_ID",                 // ID de l'annuaire Belenis (ou "organizations")
+
+  /* 2) RELAIS (Azure Function / Worker) qui interroge Document Intelligence */
+  relayUrl : "https://VOTRE-RELAIS/api/extract?code=CLE",  // URL complète du relais
+
+  /* 3) ONEDRIVE PARTAGÉ  (identifiants obtenus via ⚙︎ « Récupérer les identifiants ») */
+  driveId    : "VOTRE_DRIVE_ID",                // drive du propriétaire du dossier partagé
+  folderId   : "VOTRE_FOLDER_ID",               // dossier où ranger les PDF
+  workbookId : "VOTRE_FICHIER_EXCEL_ID",        // fichier Excel de suivi (.xlsx)
+  tableName  : "Depenses",                      // nom du TABLEAU Excel (Insertion ▸ Tableau)
+
+  /* 4) NOMENCLATURE -------------------------------------------------- */
+  // Rubriques comptables proposées dans la liste déroulante (à adapter)
+  rubriques : [
+    "Licence info","Frais bancaires","Protection sociale","Honoraires",
+    "Fournitures","Déplacements","Restauration","Télécom / Internet",
+    "Loyer & charges","Assurance","Documentation","Autre"
+  ],
+  statutParDefaut : "Payé",
+  lieuParDefaut   : "Siège",
+
+  /* 5) ORDRE DES COLONNES du tableau Excel.                            */
+  // ⚠️ Doit correspondre EXACTEMENT à l'ordre des colonnes de ton tableau.
+  // Réordonne / ajoute / retire des clés pour coller à ta feuille.
+  // Clés disponibles : annee, date, statut, recup, fournisseur,
+  //                    designation, lieu, categorie, ht, tva, ttc, rve
+  colonnes : ["annee","date","statut","recup","fournisseur","designation","lieu","categorie","ht","tva","ttc","rve"]
+};
+/* =================================================================== */
+
+const GRAPH = "https://graph.microsoft.com/v1.0";
+let pca, account = null;
+let currentFile = null;        // { blob, name, mime, base64 }
+let extracted = {};            // résultat du relais
+
+/* ---------- Utilitaires ---------- */
+const $ = id => document.getElementById(id);
+function show(screen){
+  ["login","config","capture","analyzing","form","done","settings"].forEach(s=>$("screen-"+s).classList.add("hidden"));
+  $("screen-"+screen).classList.remove("hidden");
+  window.scrollTo(0,0);
+}
+function isConfigured(){
+  return CONFIG.clientId!=="VOTRE_CLIENT_ID" && CONFIG.relayUrl.indexOf("VOTRE-RELAIS")<0
+      && CONFIG.driveId!=="VOTRE_DRIVE_ID" && CONFIG.workbookId!=="VOTRE_FICHIER_EXCEL_ID";
+}
+function fr2num(v){ if(v==null||v==="") return null; return parseFloat(String(v).replace(/\s/g,"").replace(",",".")); }
+function num2fr(n){ if(n==null||isNaN(n)) return ""; return n.toLocaleString("fr-FR",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function isoToFr(d){ if(!d) return ""; const p=String(d).slice(0,10).split("-"); return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:String(d); }
+function frYear(d){ const m=String(d).match(/(\d{4})/); return m?m[1]:new Date().getFullYear(); }
+function sanitize(s){ return String(s||"").replace(/[\\/:*?"<>|]/g,"-").replace(/\s+/g," ").trim(); }
+
+/* ---------- Authentification ---------- */
+async function initAuth(){
+  pca = new msal.PublicClientApplication({
+    auth:{
+      clientId: CONFIG.clientId,
+      authority: "https://login.microsoftonline.com/"+CONFIG.tenantId,
+      redirectUri: window.location.origin + window.location.pathname
+    },
+    cache:{ cacheLocation:"localStorage" }
+  });
+  await pca.initialize();
+  const accts = pca.getAllAccounts();
+  if(accts.length){ account = accts[0]; pca.setActiveAccount(account); }
+  renderUser();
+}
+async function signIn(){
+  const res = await pca.loginPopup({ scopes:["User.Read","Files.ReadWrite.All"] });
+  account = res.account; pca.setActiveAccount(account);
+  renderUser(); route();
+}
+function signOut(){ if(account) pca.logoutPopup({ account }); }
+async function getToken(){
+  try{ const r = await pca.acquireTokenSilent({ scopes:["Files.ReadWrite.All"], account }); return r.accessToken; }
+  catch(e){ const r = await pca.acquireTokenPopup({ scopes:["Files.ReadWrite.All"] }); return r.accessToken; }
+}
+function renderUser(){
+  if(account){
+    const initials = (account.name||account.username||"?").split(/[\s.@]/).filter(Boolean).slice(0,2).map(x=>x[0]).join("").toUpperCase();
+    $("userZone").innerHTML = `<div class="avatar" title="${account.username||""}">${initials}</div>`;
+  } else $("userZone").innerHTML = "";
+}
+
+/* ---------- Routage des écrans ---------- */
+function route(){
+  if(!account){ show("login"); return; }
+  if(!isConfigured()){ show("config"); return; }
+  resetCapture(); show("capture");
+}
+
+/* ---------- Capture du fichier ---------- */
+function resetCapture(){
+  currentFile = null; extracted = {};
+  $("previewZone").classList.add("hidden");
+  $("cameraInput").value=""; $("fileInput").value="";
+}
+function handleFile(file){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    const b64 = reader.result.split(",")[1];
+    currentFile = { blob:file, name:file.name||"facture", mime:file.type||"application/octet-stream", base64:b64 };
+    const pv = $("preview");
+    if(file.type.startsWith("image/")) pv.innerHTML = `<img src="${reader.result}" alt="aperçu" />`;
+    else pv.innerHTML = `<div class="pdfchip">📄 ${sanitize(file.name)||"Document PDF"}</div>`;
+    $("previewZone").classList.remove("hidden");
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ---------- Analyse (appel au relais) ---------- */
+async function analyze(){
+  show("analyzing");
+  try{
+    const resp = await fetch(CONFIG.relayUrl, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ base64: currentFile.base64, mime: currentFile.mime })
+    });
+    if(!resp.ok) throw new Error("Relais : "+resp.status);
+    extracted = await resp.json();
+  }catch(e){
+    extracted = { _error:String(e) };
+  }
+  fillForm(); show("form");
+}
+
+/* ---------- Remplissage du formulaire ---------- */
+function fillForm(){
+  // rubriques
+  const sel = $("f_categorie");
+  sel.innerHTML = '<option value="">— choisir —</option>' + CONFIG.rubriques.map(r=>`<option>${r}</option>`).join("");
+  // bandeau
+  const b = $("analyzeBanner");
+  if(extracted._error) b.innerHTML = `<div class="banner banner-warn">⚠️ Lecture automatique impossible (${extracted._error}). Saisis les champs à la main.</div>`;
+  else b.innerHTML = `<div class="banner banner-info">✨ Champs pré-remplis depuis la facture — vérifie les montants.</div>`;
+  // valeurs
+  $("f_date").value = isoToFr(extracted.date) || "";
+  $("f_annee").value = extracted.date ? frYear(extracted.date) : new Date().getFullYear();
+  $("f_fournisseur").value = extracted.fournisseur || "";
+  $("f_ht").value  = num2fr(extracted.ht);
+  $("f_tva").value = num2fr(extracted.tva);
+  $("f_ttc").value = num2fr(extracted.ttc);
+  $("f_designation").value = "";
+  $("f_categorie").value = "";
+  $("f_lieu").value = CONFIG.lieuParDefaut;
+  $("f_statut").value = CONFIG.statutParDefaut;
+  $("f_recup").checked = false;
+}
+
+/* recalcule l'année quand la date change */
+$("f_date") && $("f_date").addEventListener("input", e=>{ const y=frYear(e.target.value); if(y) $("f_annee").value=y; });
+
+/* ---------- Enregistrement (OneDrive + Excel) ---------- */
+function collectData(){
+  const data = {
+    annee: $("f_annee").value.trim(),
+    date: $("f_date").value.trim(),
+    statut: $("f_statut").value,
+    recup: $("f_recup").checked ? "Oui" : "",
+    fournisseur: $("f_fournisseur").value.trim(),
+    designation: $("f_designation").value.trim(),
+    lieu: $("f_lieu").value.trim(),
+    categorie: $("f_categorie").value,
+    ht: fr2num($("f_ht").value),
+    tva: fr2num($("f_tva").value),
+    ttc: fr2num($("f_ttc").value),
+    rve: ""
+  };
+  return data;
+}
+function validate(d){
+  if(!d.date) return "La date est obligatoire.";
+  if(!d.fournisseur) return "Le fournisseur est obligatoire.";
+  if(!d.designation) return "La description est obligatoire.";
+  if(!d.categorie) return "La rubrique comptable est obligatoire.";
+  return null;
+}
+async function save(){
+  const d = collectData();
+  const err = validate(d);
+  if(err){ alert(err); return; }
+
+  const btn = $("saveBtn"); btn.disabled=true;
+  btn.innerHTML = '<span class="spinner"></span> Enregistrement…';
+  try{
+    const token = await getToken();
+    const ext = (currentFile.name.split(".").pop()||"").toLowerCase();
+    const safeExt = (ext && ext.length<=4) ? ext : (currentFile.mime==="application/pdf"?"pdf":"jpg");
+    const fileName = sanitize(`${d.date.replace(/\//g,"-")}_${d.fournisseur}_${num2fr(d.ttc)||""}`).slice(0,80)+"."+safeExt;
+
+    // 1) Upload du PDF / image dans le dossier partagé
+    const upUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.folderId}:/${encodeURIComponent(fileName)}:/content`;
+    const up = await fetch(upUrl, { method:"PUT",
+      headers:{ "Authorization":"Bearer "+token, "Content-Type":currentFile.mime },
+      body: currentFile.blob });
+    if(!up.ok) throw new Error("Dépôt OneDrive : "+up.status);
+
+    // 2) Ajout de la ligne dans le tableau Excel
+    const row = CONFIG.colonnes.map(k => d[k]===null||d[k]===undefined ? "" : d[k]);
+    const rowUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/tables/${encodeURIComponent(CONFIG.tableName)}/rows/add`;
+    const r = await fetch(rowUrl, { method:"POST",
+      headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+      body: JSON.stringify({ values:[row] }) });
+    if(!r.ok) throw new Error("Écriture Excel : "+r.status);
+
+    // récap
+    $("doneRecap").innerHTML = `
+      <div><span>Date</span><b>${d.date}</b></div>
+      <div><span>Fournisseur</span><b>${d.fournisseur}</b></div>
+      <div><span>HT / TVA / TTC</span><b>${num2fr(d.ht)} / ${num2fr(d.tva)} / ${num2fr(d.ttc)} €</b></div>
+      <div><span>Rubrique</span><b>${d.categorie}</b></div>
+      <div><span>Fichier</span><b>${fileName}</b></div>`;
+    show("done");
+  }catch(e){
+    alert("Échec de l'enregistrement.\n"+e.message+"\n\nVérifie les réglages (OneDrive / tableau Excel).");
+  }finally{
+    btn.disabled=false; btn.innerHTML='<span class="ico">💾</span> Enregistrer';
+  }
+}
+
+/* ---------- Diagnostic : récupérer les IDs OneDrive ---------- */
+async function resolveIds(){
+  const res = $("idResult"); res.innerHTML="";
+  const px = $("path_xlsx").value.trim(), pf = $("path_folder").value.trim();
+  if(!px && !pf){ res.innerHTML = `<div class="banner banner-warn">Indique au moins un chemin.</div>`; return; }
+  try{
+    const token = await getToken();
+    const lines = [];
+    async function lookup(path,label){
+      const clean = "/"+path.replace(/^\/+/,"");
+      const url = `${GRAPH}/me/drive/root:${encodeURI(clean)}?$select=id,name,parentReference`;
+      const r = await fetch(url, { headers:{ "Authorization":"Bearer "+token } });
+      if(!r.ok){ lines.push(`<div class="banner banner-warn">${label} introuvable (${r.status}) : ${clean}</div>`); return; }
+      const j = await r.json();
+      const drive = j.parentReference && j.parentReference.driveId ? j.parentReference.driveId : "(drive racine)";
+      lines.push(`<div class="idbox"><b>${label}</b><br>driveId : <code>${drive}</code><br>itemId : <code>${j.id}</code></div>`);
+    }
+    if(px) await lookup(px,"Excel de suivi (workbookId)");
+    if(pf) await lookup(pf,"Dossier des PDF (folderId)");
+    res.innerHTML = lines.join("") + `<p class="lead" style="margin-top:10px">Copie ces valeurs dans le bloc CONFIG en haut du fichier.</p>`;
+  }catch(e){ res.innerHTML = `<div class="banner banner-warn">Erreur : ${e.message}</div>`; }
+}
+
+/* ---------- Statut config (écran réglages) ---------- */
+function renderCfgStatus(){
+  const items = [
+    ["Client ID", CONFIG.clientId!=="VOTRE_CLIENT_ID"],
+    ["Relais (extraction)", CONFIG.relayUrl.indexOf("VOTRE-RELAIS")<0],
+    ["Drive partagé", CONFIG.driveId!=="VOTRE_DRIVE_ID"],
+    ["Dossier PDF", CONFIG.folderId!=="VOTRE_FOLDER_ID"],
+    ["Fichier Excel", CONFIG.workbookId!=="VOTRE_FICHIER_EXCEL_ID"]
+  ];
+  $("cfgStatus").innerHTML = items.map(([l,ok])=>
+    `<div class="settings-row"><span><span class="dot ${ok?'green':'red'}"></span>${l}</span><b>${ok?'OK':'à faire'}</b></div>`).join("");
+}
+
+/* ---------- Branchements ---------- */
+$("loginBtn").onclick = ()=>signIn().catch(e=>alert("Connexion impossible : "+e.message));
+$("signoutLink").onclick = signOut;
+$("photoBtn").onclick = ()=>$("cameraInput").click();
+$("fileBtn").onclick  = ()=>$("fileInput").click();
+$("cameraInput").onchange = e=>handleFile(e.target.files[0]);
+$("fileInput").onchange  = e=>handleFile(e.target.files[0]);
+$("cancelFileBtn").onclick = resetCapture;
+$("analyzeBtn").onclick = ()=>{ if(currentFile) analyze(); };
+$("saveBtn").onclick = save;
+$("cancelFormBtn").onclick = route;
+$("newBtn").onclick = route;
+$("settingsBtn").onclick = ()=>{ renderCfgStatus(); show("settings"); };
+$("openSettingsFromConfig").onclick = ()=>{ renderCfgStatus(); show("settings"); };
+$("closeSettingsBtn").onclick = route;
+$("resolveBtn").onclick = resolveIds;
+
+/* ---------- Démarrage ---------- */
+initAuth().then(route).catch(e=>{ alert("Erreur d'initialisation : "+e.message); });
+</script>
+</body>
+</html>
