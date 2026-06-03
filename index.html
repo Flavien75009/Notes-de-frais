@@ -19,6 +19,8 @@
 
 <!-- MSAL : authentification Microsoft (OneDrive / Excel via Graph) -->
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+<!-- jsPDF : conversion des photos en PDF -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 
 <style>
   :root{
@@ -516,6 +518,25 @@ function validate(d){
   if(!d.categorie) return "La rubrique comptable est obligatoire.";
   return null;
 }
+/* ---------- Conversion image (photo) → PDF ---------- */
+async function imageToPdfBlob(file){
+  const dataUrl = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+  const img = new Image();
+  await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=dataUrl; });
+  // redimensionne (max 1800 px) pour limiter le poids du PDF
+  const maxDim = 1800;
+  let w = img.naturalWidth, h = img.naturalHeight;
+  const scale = Math.min(1, maxDim/Math.max(w,h));
+  w = Math.round(w*scale); h = Math.round(h*scale);
+  const canvas = document.createElement("canvas"); canvas.width=w; canvas.height=h;
+  canvas.getContext("2d").drawImage(img,0,0,w,h);
+  const jpeg = canvas.toDataURL("image/jpeg", 0.82);
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: w>h?"landscape":"portrait", unit:"px", format:[w,h] });
+  pdf.addImage(jpeg, "JPEG", 0, 0, w, h);
+  return pdf.output("blob");
+}
+
 async function save(){
   const d = collectData();
   const err = validate(d);
@@ -525,8 +546,16 @@ async function save(){
   btn.innerHTML = '<span class="spinner"></span> Enregistrement…';
   try{
     const token = await getToken();
-    const ext = (currentFile.name.split(".").pop()||"").toLowerCase();
-    const safeExt = (ext && ext.length<=4) ? ext : (currentFile.mime==="application/pdf"?"pdf":"jpg");
+
+    // Une photo/image est convertie en PDF ; un PDF reste tel quel
+    let uploadBlob = currentFile.blob, uploadMime = currentFile.mime, safeExt;
+    if(currentFile.mime.startsWith("image/")){
+      uploadBlob = await imageToPdfBlob(currentFile.blob);
+      uploadMime = "application/pdf"; safeExt = "pdf";
+    } else {
+      const ext = (currentFile.name.split(".").pop()||"").toLowerCase();
+      safeExt = (ext && ext.length<=4) ? ext : (currentFile.mime==="application/pdf"?"pdf":"bin");
+    }
     // Nom du fichier : AAMMJJ - Fournisseur - Description
     const p = d.date.split("/");   // JJ/MM/AAAA
     const aammjj = (p.length===3) ? (p[2].slice(2) + p[1].padStart(2,"0") + p[0].padStart(2,"0")) : "000000";
@@ -535,8 +564,8 @@ async function save(){
     // 1) Upload du PDF / image dans le dossier partagé
     const upUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.folderId}:/${encodeURIComponent(fileName)}:/content`;
     const up = await fetch(upUrl, { method:"PUT",
-      headers:{ "Authorization":"Bearer "+token, "Content-Type":currentFile.mime },
-      body: currentFile.blob });
+      headers:{ "Authorization":"Bearer "+token, "Content-Type":uploadMime },
+      body: uploadBlob });
     if(!up.ok) throw new Error("Dépôt OneDrive : "+up.status);
 
     // 2) Ajout de la ligne dans le tableau Excel
