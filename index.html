@@ -21,6 +21,8 @@
 <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
 <!-- jsPDF : conversion des photos en PDF -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- SheetJS : lecture du relevé bancaire (Excel) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <style>
   :root{
@@ -141,6 +143,24 @@
   .idbox{background:var(--bg); border-radius:10px; padding:12px; margin-top:10px; font-size:12px; line-height:1.7}
   footer{padding:14px 18px calc(env(safe-area-inset-bottom) + 14px); text-align:center; color:var(--muted); font-size:12px}
   .link{color:var(--primary); text-decoration:underline; cursor:pointer; background:none; border:none; font-size:inherit; font-family:inherit; padding:0}
+
+  /* Onglets Scanner / Rapprochement */
+  .tabs{display:flex; gap:6px; margin-bottom:16px; background:#fff; border:1px solid var(--line); border-radius:12px; padding:4px}
+  .tab{flex:1; padding:11px; border:none; background:transparent; border-radius:9px; font-family:"Public Sans"; font-weight:600; font-size:14px; color:var(--muted); cursor:pointer}
+  .tab.active{background:var(--primary); color:#fff}
+  /* Rapprochement */
+  .period{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .period input{flex:1; min-width:130px}
+  .stat{display:flex; justify-content:space-between; align-items:center; padding:9px 0; border-bottom:1px solid var(--line); font-size:14px}
+  .stat:last-child{border:none}
+  .pill{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; margin-left:6px}
+  .pill.ok{background:var(--ok-bg); color:#1c4d38}
+  .pill.warn{background:var(--danger-bg); color:#7a2e1f}
+  table.rec{width:100%; border-collapse:collapse; font-size:13px; margin-top:6px}
+  table.rec th,table.rec td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)}
+  table.rec th{color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase}
+  table.rec td.amt{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  .rec-h{font-family:"Fraunces",serif; font-size:15px; margin:18px 0 4px}
 </style>
 </head>
 <body>
@@ -157,6 +177,12 @@
   </header>
 
   <main>
+    <!-- Onglets (visibles une fois connecté + configuré) -->
+    <div class="tabs hidden" id="tabs">
+      <button class="tab active" data-screen="capture">📷 Scanner</button>
+      <button class="tab" data-screen="reconcile">🔍 Rapprochement</button>
+    </div>
+
     <!-- ÉCRAN : connexion -->
     <section id="screen-login" class="card hidden">
       <h2>Connexion</h2>
@@ -290,6 +316,27 @@
 
       <button class="btn btn-primary" id="closeSettingsBtn" style="margin-top:20px">Retour</button>
     </section>
+
+    <!-- ÉCRAN : rapprochement -->
+    <section id="screen-reconcile" class="hidden">
+      <div class="card">
+        <h2>État des lieux</h2>
+        <p class="lead">Période à vérifier (laisse vide pour tout prendre) :</p>
+        <div class="period">
+          <input type="date" id="rec_from" aria-label="du" />
+          <span style="color:var(--muted)">→</span>
+          <input type="date" id="rec_to" aria-label="au" />
+        </div>
+        <div id="rec_stats" style="margin-top:14px"></div>
+      </div>
+      <div class="card">
+        <h2>Rapprochement bancaire</h2>
+        <p class="lead">Importe ton relevé Crédit Mutuel (Excel) : l'appli compare les débits à tes factures enregistrées et liste celles qui manquent.</p>
+        <button class="btn btn-primary" id="rec_bankBtn"><span class="ico">🏦</span> Importer le relevé bancaire</button>
+        <input type="file" id="rec_bankInput" accept=".xlsx,.xls,.csv" class="hidden" />
+        <div id="rec_result" style="margin-top:14px"></div>
+      </div>
+    </section>
   </main>
 
   <footer>Belenis Expense — <button class="link" id="signoutLink">Se déconnecter</button></footer>
@@ -312,7 +359,8 @@ const CONFIG = {
   driveId    : "b!cAH_3_ai2U2s3p2Kn0y44j2FnKfIoplLk1zaLLFBbsGmX_ijQAn6T6H1Msls6NhE",  // drive partagé
   folderId   : "017KIGWR3HJV2EBUQS35FZXD7ASNOXC4CY",   // dossier des PDF
   workbookId : "017KIGWR2WHWO6PCJLHFFJTGAQGZKCYYAZ",   // fichier Excel de suivi
-  tableName  : "Depenses",                      // nom du TABLEAU Excel (Insertion ▸ Tableau)
+  tableName  : "Depenses",                      // (non utilisé : écriture directe en C→L)
+  depSheet   : "",                              // onglet des dépenses (vide = détection auto, hors « filtres »)
 
   /* 4) NOMENCLATURE -------------------------------------------------- */
   // Rubriques comptables proposées dans la liste déroulante (à adapter)
@@ -343,8 +391,14 @@ let rubriquesLoaded = false;
 /* ---------- Utilitaires ---------- */
 const $ = id => document.getElementById(id);
 function show(screen){
-  ["login","config","capture","analyzing","form","done","settings"].forEach(s=>$("screen-"+s).classList.add("hidden"));
+  ["login","config","capture","analyzing","form","done","settings","reconcile"].forEach(s=>$("screen-"+s).classList.add("hidden"));
   $("screen-"+screen).classList.remove("hidden");
+  const tabs = $("tabs");
+  if(tabs){
+    const on = (screen==="capture" || screen==="reconcile");
+    tabs.classList.toggle("hidden", !on);
+    if(on) tabs.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.screen===screen));
+  }
   window.scrollTo(0,0);
 }
 function isConfigured(){
@@ -356,6 +410,49 @@ function num2fr(n){ if(n==null||isNaN(n)) return ""; return n.toLocaleString("fr
 function isoToFr(d){ if(!d) return ""; const p=String(d).slice(0,10).split("-"); return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:String(d); }
 function frYear(d){ const m=String(d).match(/(\d{4})/); return m?m[1]:new Date().getFullYear(); }
 function sanitize(s){ return String(s||"").replace(/[\\/:*?"<>|]/g,"-").replace(/\s+/g," ").trim(); }
+function pad2(n){ return String(n).padStart(2,"0"); }
+function normDate(v){
+  if(v==null||v==="") return "";
+  if(v instanceof Date) return `${v.getUTCFullYear()}-${pad2(v.getUTCMonth()+1)}-${pad2(v.getUTCDate())}`;
+  if(typeof v==="number"){ const dt=new Date(Math.round((v-25569)*86400000)); return `${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth()+1)}-${pad2(dt.getUTCDate())}`; }
+  const s=String(v).trim();
+  let m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) return `${m[3]}-${pad2(m[2])}-${pad2(m[1])}`;
+  m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);       if(m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  const dt=new Date(s); return isNaN(dt)?s:`${dt.getUTCFullYear()}-${pad2(dt.getUTCMonth()+1)}-${pad2(dt.getUTCDate())}`;
+}
+function frDate(iso){ const m=String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/); return m?`${m[3]}/${m[2]}/${m[1]}`:String(iso||""); }
+function dayDiff(a,b){ return (Date.parse(a)-Date.parse(b))/86400000; }
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+/* ---------- Lecture de l'onglet des dépenses (Graph) ---------- */
+let depSheetName = CONFIG.depSheet || null;
+async function resolveDepSheet(token){
+  if(depSheetName) return depSheetName;
+  const r = await fetch(`${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets`, { headers:{ "Authorization":"Bearer "+token } });
+  const sheets = (await r.json()).value || [];
+  const s = sheets.find(x => (x.name||"").toLowerCase()!=="filtres") || sheets[0];
+  depSheetName = s ? s.name : "Feuil1";
+  return depSheetName;
+}
+async function readDepRange(token){
+  const sheet = await resolveDepSheet(token);
+  const url = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(sheet)}')/range(address='C1:L2000')`;
+  const r = await fetch(url, { headers:{ "Authorization":"Bearer "+token } });
+  if(!r.ok) throw new Error("Lecture Excel : "+r.status);
+  const data = await r.json();
+  return { sheet, values: data.values || [] };
+}
+// Index dans la plage C:L  ->  C=0 D=1 E=2 F=3 G=4 H=5 I=6 J=7 K=8 L=9
+function parseDepRows(values){
+  const out=[];
+  for(let i=1;i<values.length;i++){               // i=0 = ligne d'en-tête
+    const r = values[i]; if(!r) continue;
+    const c = r[0];
+    if(c===null||c===undefined||String(c).trim()==="") continue;
+    out.push({ dateISO: normDate(c), fournisseur: String(r[3]||"").trim(), designation: String(r[4]||"").trim(), ttc: fr2num(r[9]) });
+  }
+  return out;
+}
 
 /* ---------- Authentification (redirection : compatible mobile) ---------- */
 async function initAuth(){
@@ -561,19 +658,41 @@ async function save(){
     const aammjj = (p.length===3) ? (p[2].slice(2) + p[1].padStart(2,"0") + p[0].padStart(2,"0")) : "000000";
     const fileName = sanitize(`${aammjj} - ${d.fournisseur} - ${d.designation}`).slice(0,90) + "." + safeExt;
 
-    // 1) Upload du PDF / image dans le dossier partagé
+    // 1) Lire les dépenses existantes (anti-doublon + point d'insertion)
+    const dep = await readDepRange(token);              // { sheet, values }
+    const newISO = normDate(d.date);
+    for(let i=1;i<dep.values.length;i++){
+      const rv = dep.values[i]; if(!rv) continue;
+      const fz = String(rv[3]||"").trim().toLowerCase();
+      const tz = fr2num(rv[9]);
+      if(fz && fz===String(d.fournisseur).trim().toLowerCase()
+         && tz!=null && d.ttc!=null && Math.abs(tz-d.ttc)<0.01
+         && normDate(rv[0])===newISO){
+        throw new Error("DOUBLON");
+      }
+    }
+    // point d'insertion : dernière ligne remplie en colonne C, +1
+    let lastFilled = 1;
+    for(let i=0;i<dep.values.length;i++){
+      const c = (dep.values[i]||[])[0];
+      if(c!==null && c!==undefined && String(c).trim()!=="") lastFilled = i+1;
+    }
+    const target = lastFilled + 1;
+
+    // 2) Upload du PDF dans le dossier
     const upUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.folderId}:/${encodeURIComponent(fileName)}:/content`;
     const up = await fetch(upUrl, { method:"PUT",
       headers:{ "Authorization":"Bearer "+token, "Content-Type":uploadMime },
       body: uploadBlob });
     if(!up.ok) throw new Error("Dépôt OneDrive : "+up.status);
 
-    // 2) Ajout de la ligne dans le tableau Excel
-    const row = CONFIG.colonnes.map(k => d[k]===null||d[k]===undefined ? "" : d[k]);
-    const rowUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/tables/${encodeURIComponent(CONFIG.tableName)}/rows/add`;
-    const r = await fetch(rowUrl, { method:"POST",
+    // 3) Écriture de la ligne dans les colonnes C → L
+    const vals = [[ d.date, d.statut, "", d.fournisseur, d.designation, d.lieu, d.categorie,
+                    d.ht==null?"":d.ht, d.tva==null?"":d.tva, d.ttc==null?"":d.ttc ]];
+    const wUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(dep.sheet)}')/range(address='C${target}:L${target}')`;
+    const r = await fetch(wUrl, { method:"PATCH",
       headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
-      body: JSON.stringify({ values:[row] }) });
+      body: JSON.stringify({ values: vals }) });
     if(!r.ok) throw new Error("Écriture Excel : "+r.status);
 
     // récap
@@ -585,7 +704,11 @@ async function save(){
       <div><span>Fichier</span><b>${fileName}</b></div>`;
     show("done");
   }catch(e){
-    alert("Échec de l'enregistrement.\n"+e.message+"\n\nVérifie les réglages (OneDrive / tableau Excel).");
+    if(e.message==="DOUBLON"){
+      alert("⚠️ Cette facture semble déjà enregistrée\n(même date, même fournisseur et même montant TTC).\n\nElle n'a pas été ajoutée une seconde fois.");
+    } else {
+      alert("Échec de l'enregistrement.\n"+e.message+"\n\nVérifie les réglages (OneDrive / Excel).");
+    }
   }finally{
     btn.disabled=false; btn.innerHTML='<span class="ico">💾</span> Enregistrer';
   }
@@ -627,6 +750,95 @@ function renderCfgStatus(){
     `<div class="settings-row"><span><span class="dot ${ok?'green':'red'}"></span>${l}</span><b>${ok?'OK':'à faire'}</b></div>`).join("");
 }
 
+/* ---------- Rapprochement bancaire ---------- */
+let depCache = null;
+function inRange(iso){ const f=$("rec_from").value, t=$("rec_to").value; return (!f||iso>=f) && (!t||iso<=t); }
+async function loadEtat(){
+  $("rec_result").innerHTML = "";
+  $("rec_stats").innerHTML = '<div class="loading-block"><div class="spinner"></div><div>Lecture des dépenses…</div></div>';
+  try{
+    const token = await getToken();
+    const dep = await readDepRange(token);
+    depCache = parseDepRows(dep.values);
+    renderEtat();
+  }catch(e){ $("rec_stats").innerHTML = `<div class="banner banner-warn">Lecture impossible : ${escapeHtml(e.message)}</div>`; }
+}
+function renderEtat(){
+  if(!depCache) return;
+  const rows = depCache.filter(x => x.ttc!=null && inRange(x.dateISO));
+  const total = rows.reduce((s,x)=>s+x.ttc,0);
+  $("rec_stats").innerHTML =
+    `<div class="stat"><span>Factures enregistrées</span><b>${rows.length}</b></div>`+
+    `<div class="stat"><span>Total TTC</span><b>${num2fr(total)} €</b></div>`;
+}
+async function parseBank(file){
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { cellDates:true });
+  for(const name of wb.SheetNames){
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, raw:true, defval:null });
+    let hi=-1; const ci={};
+    for(let i=0;i<Math.min(rows.length,20);i++){
+      const r = (rows[i]||[]).map(c=>String(c==null?"":c).toLowerCase());
+      const hasLib = r.some(c=>c.includes("libell"));
+      const hasDeb = r.some(c=>c.includes("débit")||c.includes("debit"));
+      if(hasLib && hasDeb){
+        hi=i;
+        r.forEach((c,j)=>{
+          if(c.includes("date") && ci.date==null) ci.date=j;
+          if(c.includes("libell")) ci.lib=j;
+          if(c.includes("débit")||c.includes("debit")) ci.deb=j;
+        });
+        break;
+      }
+    }
+    if(hi<0) continue;
+    const out=[];
+    for(let i=hi+1;i<rows.length;i++){
+      const r = rows[i]; if(!r) continue;
+      const raw = r[ci.deb];
+      const m = (typeof raw==="number") ? raw : parseFloat(String(raw==null?"":raw).replace(/\s/g,"").replace(",","."));
+      if(isNaN(m) || m>=0) continue;          // on ne garde que les débits (négatifs)
+      out.push({ dateISO: normDate(r[ci.date]), libelle: String(r[ci.lib]||"").trim(), montant: Math.abs(m) });
+    }
+    if(out.length) return out;
+  }
+  return [];
+}
+async function handleBank(file){
+  $("rec_result").innerHTML = '<div class="loading-block"><div class="spinner"></div><div>Analyse du relevé…</div></div>';
+  try{
+    if(!depCache){ const token=await getToken(); const dep=await readDepRange(token); depCache=parseDepRows(dep.values); renderEtat(); }
+    const debits = await parseBank(file);
+    if(!debits.length){ $("rec_result").innerHTML = '<div class="banner banner-warn">Aucun débit détecté. Vérifie que le fichier contient les colonnes Date / Libellé / Débit.</div>'; return; }
+    renderReconcile(debits);
+  }catch(e){ $("rec_result").innerHTML = `<div class="banner banner-warn">Erreur : ${escapeHtml(e.message)}</div>`; }
+}
+function renderReconcile(debits){
+  const dRange = debits.filter(db=>inRange(db.dateISO));
+  const pool = depCache.filter(x=>x.ttc!=null && inRange(x.dateISO)).map(x=>({ ...x, used:false }));
+  let matched=0; const missing=[];
+  dRange.forEach(db=>{
+    const c = pool.find(p=>!p.used && Math.abs(p.ttc-db.montant)<0.01 && Math.abs(dayDiff(p.dateISO,db.dateISO))<=7);
+    if(c){ c.used=true; matched++; } else missing.push(db);
+  });
+  const depMissing = pool.filter(p=>!p.used);
+  let html =
+    `<div class="stat"><span>Débits sur la période</span><b>${dRange.length}</b></div>`+
+    `<div class="stat"><span>Rapprochés<span class="pill ok">OK</span></span><b>${matched}</b></div>`+
+    `<div class="stat"><span>Débits sans facture<span class="pill warn">à récupérer</span></span><b>${missing.length}</b></div>`;
+  if(missing.length){
+    html += `<div class="rec-h">Débits sans facture</div><table class="rec"><tr><th>Date</th><th>Libellé</th><th class="amt">Montant</th></tr>`;
+    missing.sort((a,b)=>a.dateISO<b.dateISO?-1:1).forEach(m=> html += `<tr><td>${frDate(m.dateISO)}</td><td>${escapeHtml(m.libelle)}</td><td class="amt">${num2fr(m.montant)} €</td></tr>`);
+    html += `</table>`;
+  }
+  if(depMissing.length){
+    html += `<div class="rec-h">Factures sans débit correspondant</div><table class="rec"><tr><th>Date</th><th>Fournisseur</th><th class="amt">TTC</th></tr>`;
+    depMissing.sort((a,b)=>a.dateISO<b.dateISO?-1:1).forEach(m=> html += `<tr><td>${frDate(m.dateISO)}</td><td>${escapeHtml(m.fournisseur)}</td><td class="amt">${num2fr(m.ttc)} €</td></tr>`);
+    html += `</table>`;
+  }
+  $("rec_result").innerHTML = html;
+}
+
 /* ---------- Branchements ---------- */
 $("loginBtn").onclick = ()=>signIn().catch(e=>alert("Connexion impossible : "+e.message));
 $("signoutLink").onclick = signOut;
@@ -643,6 +855,16 @@ $("settingsBtn").onclick = ()=>{ renderCfgStatus(); show("settings"); };
 $("openSettingsFromConfig").onclick = ()=>{ renderCfgStatus(); show("settings"); };
 $("closeSettingsBtn").onclick = route;
 $("resolveBtn").onclick = resolveIds;
+
+/* Onglets + rapprochement */
+document.querySelectorAll(".tab").forEach(t => t.onclick = ()=>{
+  if(t.dataset.screen==="reconcile"){ show("reconcile"); loadEtat(); }
+  else route();
+});
+$("rec_from").addEventListener("change", ()=>{ renderEtat(); $("rec_result").innerHTML=""; });
+$("rec_to").addEventListener("change",   ()=>{ renderEtat(); $("rec_result").innerHTML=""; });
+$("rec_bankBtn").onclick = ()=>$("rec_bankInput").click();
+$("rec_bankInput").onchange = e=>{ if(e.target.files[0]) handleBank(e.target.files[0]); e.target.value=""; };
 
 /* ---------- Démarrage ---------- */
 initAuth().then(route).catch(e=>{ alert("Erreur d'initialisation : "+e.message); });
