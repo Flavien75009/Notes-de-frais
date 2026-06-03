@@ -165,6 +165,11 @@
   table.rec th{color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase}
   table.rec td.amt{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
   .rec-h{font-family:"Fraunces",serif; font-size:15px; margin:18px 0 4px}
+  /* Recadrage */
+  #cropStage{position:relative; touch-action:none; user-select:none; -webkit-user-select:none; border-radius:12px; overflow:hidden; background:#111; margin:6px 0 14px}
+  #cropStage img{display:block; width:100%; height:auto; pointer-events:none}
+  #cropOverlay{position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none}
+  #cropStage .handle{position:absolute; width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:50%; background:rgba(44,66,102,.4); border:3px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.5); touch-action:none; cursor:grab; z-index:3}
 </style>
 </head>
 <body>
@@ -217,6 +222,26 @@
         <button class="link" id="cancelFileBtn" style="display:block;margin:14px auto 0">Changer de fichier</button>
       </div>
       <div class="capture-hint">🔒 La facture reste privée — elle n'est lue que le temps de l'analyse.</div>
+    </section>
+
+    <!-- ÉCRAN : recadrage du ticket -->
+    <section id="screen-crop" class="card hidden">
+      <h2>Cadrer le ticket</h2>
+      <p class="lead">Déplace les 4 coins sur les bords du ticket, puis « Recadrer ».</p>
+      <div id="cropStage">
+        <img id="cropImg" alt="" />
+        <canvas id="cropOverlay"></canvas>
+        <div class="handle" data-i="0"></div>
+        <div class="handle" data-i="1"></div>
+        <div class="handle" data-i="2"></div>
+        <div class="handle" data-i="3"></div>
+      </div>
+      <div class="switch">
+        <div><span>Noir &amp; blanc</span><small>rendu type scan</small></div>
+        <label class="toggle"><input type="checkbox" id="cropBW" /><span class="track"></span><span class="knob"></span></label>
+      </div>
+      <button class="btn btn-primary" id="cropApply"><span class="ico">✂️</span> Recadrer</button>
+      <button class="link" id="cropSkip" style="display:block;margin:12px auto 0">Garder l'image entière</button>
     </section>
 
     <!-- ÉCRAN : analyse en cours -->
@@ -395,7 +420,7 @@ let rubriquesLoaded = false;
 /* ---------- Utilitaires ---------- */
 const $ = id => document.getElementById(id);
 function show(screen){
-  ["login","config","capture","analyzing","form","done","settings","reconcile"].forEach(s=>$("screen-"+s).classList.add("hidden"));
+  ["login","config","capture","crop","analyzing","form","done","settings","reconcile"].forEach(s=>$("screen-"+s).classList.add("hidden"));
   $("screen-"+screen).classList.remove("hidden");
   const tabs = $("tabs");
   if(tabs){
@@ -524,16 +549,145 @@ function resetCapture(){
 }
 function handleFile(file){
   if(!file) return;
+  if((file.type||"").startsWith("image/")) startCrop(file);   // photo → recadrage
+  else setCurrentFromFile(file);                              // PDF → aperçu direct
+}
+function setCurrentFromFile(file){
   const reader = new FileReader();
   reader.onload = ()=>{
     const b64 = reader.result.split(",")[1];
     currentFile = { blob:file, name:file.name||"facture", mime:file.type||"application/octet-stream", base64:b64 };
     const pv = $("preview");
-    if(file.type.startsWith("image/")) pv.innerHTML = `<img src="${reader.result}" alt="aperçu" />`;
+    if((file.type||"").startsWith("image/")) pv.innerHTML = `<img src="${reader.result}" alt="aperçu" />`;
     else pv.innerHTML = `<div class="pdfchip">📄 ${sanitize(file.name)||"Document PDF"}</div>`;
     $("previewZone").classList.remove("hidden");
+    show("capture");
   };
   reader.readAsDataURL(file);
+}
+
+/* ---------- Recadrage manuel du ticket ---------- */
+const crop = { file:null, name:"ticket", dataUrl:null, pts:[] };
+function startCrop(file){
+  crop.file = file; crop.name = file.name || "ticket";
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    crop.dataUrl = reader.result;
+    show("crop");
+    const img = $("cropImg");
+    img.onload = ()=>initCropHandles();
+    img.src = crop.dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+function initCropHandles(){
+  const stage = $("cropStage"), img = $("cropImg");
+  const go = ()=>{
+    const w = stage.clientWidth, h = img.clientHeight;
+    if(!w || !h){ requestAnimationFrame(go); return; }
+    stage.style.height = h + "px";
+    const ov = $("cropOverlay"); ov.width = w; ov.height = h;
+    const mx = w*0.08, my = h*0.08;
+    crop.pts = [[mx,my],[w-mx,my],[w-mx,h-my],[mx,h-my]];   // TL, TR, BR, BL
+    placeHandles(); drawOverlay();
+  };
+  requestAnimationFrame(go);
+}
+function placeHandles(){
+  document.querySelectorAll("#cropStage .handle").forEach(hd=>{
+    const i=+hd.dataset.i; hd.style.left=crop.pts[i][0]+"px"; hd.style.top=crop.pts[i][1]+"px";
+  });
+}
+function drawOverlay(){
+  const ov=$("cropOverlay"); if(!ov.width) return;
+  const c=ov.getContext("2d"); c.clearRect(0,0,ov.width,ov.height);
+  c.beginPath(); crop.pts.forEach((p,i)=> i?c.lineTo(p[0],p[1]):c.moveTo(p[0],p[1])); c.closePath();
+  c.fillStyle="rgba(44,66,102,0.12)"; c.fill();
+  c.strokeStyle="#fff"; c.lineWidth=2; c.stroke();
+}
+function bindHandles(){
+  document.querySelectorAll("#cropStage .handle").forEach(hd=>{
+    hd.addEventListener("pointerdown", e=>{
+      e.preventDefault(); hd.setPointerCapture(e.pointerId);
+      const i=+hd.dataset.i, stage=$("cropStage");
+      const move = ev=>{
+        const rect=stage.getBoundingClientRect();
+        let x=ev.clientX-rect.left, y=ev.clientY-rect.top;
+        x=Math.max(0,Math.min(stage.clientWidth,x)); y=Math.max(0,Math.min(stage.clientHeight,y));
+        crop.pts[i]=[x,y]; hd.style.left=x+"px"; hd.style.top=y+"px"; drawOverlay();
+      };
+      const up = ()=>{ hd.removeEventListener("pointermove",move); hd.removeEventListener("pointerup",up); };
+      hd.addEventListener("pointermove",move); hd.addEventListener("pointerup",up);
+    });
+  });
+}
+function bilin(a,b,c,d,dx,dy){ return a*(1-dx)*(1-dy)+b*dx*(1-dy)+c*(1-dx)*dy+d*dx*dy; }
+function solve8(A,b){
+  const n=8, M=A.map((r,i)=>r.concat(b[i]));
+  for(let col=0;col<n;col++){
+    let p=col; for(let r=col+1;r<n;r++) if(Math.abs(M[r][col])>Math.abs(M[p][col])) p=r;
+    [M[col],M[p]]=[M[p],M[col]];
+    const piv=M[col][col]||1e-9;
+    for(let j=col;j<=n;j++) M[col][j]/=piv;
+    for(let r=0;r<n;r++){ if(r===col) continue; const f=M[r][col]; for(let j=col;j<=n;j++) M[r][j]-=f*M[col][j]; }
+  }
+  return M.map(r=>r[n]);
+}
+function homography(dst, src){   // H : dst -> src
+  const A=[], b=[];
+  for(let i=0;i<4;i++){
+    const x=dst[i][0], y=dst[i][1], u=src[i][0], v=src[i][1];
+    A.push([x,y,1,0,0,0,-x*u,-y*u]); b.push(u);
+    A.push([0,0,0,x,y,1,-x*v,-y*v]); b.push(v);
+  }
+  const h=solve8(A,b); return [h[0],h[1],h[2],h[3],h[4],h[5],h[6],h[7],1];
+}
+async function applyCrop(){
+  const btn=$("cropApply"); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Traitement…';
+  await new Promise(r=>setTimeout(r,40));   // laisser l'UI peindre
+  try{
+    const img=new Image(); await new Promise(r=>{ img.onload=r; img.src=crop.dataUrl; });
+    const cap=1600, sc=Math.min(1, cap/Math.max(img.naturalWidth,img.naturalHeight));
+    const sw=Math.round(img.naturalWidth*sc), sh=Math.round(img.naturalHeight*sc);
+    const sCanvas=document.createElement("canvas"); sCanvas.width=sw; sCanvas.height=sh;
+    const sctx=sCanvas.getContext("2d"); sctx.drawImage(img,0,0,sw,sh);
+    const sD=sctx.getImageData(0,0,sw,sh).data;
+    const stage=$("cropStage"), fx=sw/stage.clientWidth, fy=sh/stage.clientHeight;
+    const srcP=crop.pts.map(p=>[p[0]*fx, p[1]*fy]);
+    const dist=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1]);
+    let W=Math.round((dist(srcP[0],srcP[1])+dist(srcP[3],srcP[2]))/2);
+    let H=Math.round((dist(srcP[0],srcP[3])+dist(srcP[1],srcP[2]))/2);
+    const ocap=1200, os=Math.min(1, ocap/Math.max(W,H)); W=Math.max(1,Math.round(W*os)); H=Math.max(1,Math.round(H*os));
+    const Hm=homography([[0,0],[W,0],[W,H],[0,H]], srcP);
+    const out=document.createElement("canvas"); out.width=W; out.height=H;
+    const octx=out.getContext("2d"); const od=octx.createImageData(W,H); const oD=od.data;
+    const bw=$("cropBW").checked;
+    for(let y=0;y<H;y++){
+      for(let x=0;x<W;x++){
+        const dn=Hm[6]*x+Hm[7]*y+Hm[8];
+        const u=(Hm[0]*x+Hm[1]*y+Hm[2])/dn, v=(Hm[3]*x+Hm[4]*y+Hm[5])/dn;
+        let r,g,bl;
+        if(u<0||v<0||u>=sw-1||v>=sh-1){ r=g=bl=255; }
+        else{
+          const x0=u|0, y0=v|0, dx=u-x0, dy=v-y0;
+          const i00=(y0*sw+x0)*4, i10=i00+4, i01=i00+sw*4, i11=i01+4;
+          r =bilin(sD[i00],  sD[i10],  sD[i01],  sD[i11],  dx,dy);
+          g =bilin(sD[i00+1],sD[i10+1],sD[i01+1],sD[i11+1],dx,dy);
+          bl=bilin(sD[i00+2],sD[i10+2],sD[i01+2],sD[i11+2],dx,dy);
+        }
+        if(bw){ let gr=0.299*r+0.587*g+0.114*bl; gr=(gr-128)*1.4+138; gr=gr<0?0:gr>255?255:gr; r=g=bl=gr; }
+        const o=(y*W+x)*4; oD[o]=r; oD[o+1]=g; oD[o+2]=bl; oD[o+3]=255;
+      }
+    }
+    octx.putImageData(od,0,0);
+    const dataUrl=out.toDataURL("image/jpeg",0.85);
+    const blob=await new Promise(res=>out.toBlob(res,"image/jpeg",0.85));
+    currentFile={ blob, name:(crop.name.replace(/\.[^.]+$/,"")||"ticket")+".jpg", mime:"image/jpeg", base64:dataUrl.split(",")[1] };
+    $("preview").innerHTML=`<img src="${dataUrl}" alt="aperçu" />`;
+    $("previewZone").classList.remove("hidden");
+    show("capture");
+  }catch(e){ alert("Recadrage impossible : "+e.message); }
+  finally{ btn.disabled=false; btn.innerHTML='<span class="ico">✂️</span> Recadrer'; }
 }
 
 /* ---------- Analyse (appel au relais) ---------- */
@@ -860,6 +1014,9 @@ $("fileBtn").onclick  = ()=>$("fileInput").click();
 $("cameraInput").onchange = e=>handleFile(e.target.files[0]);
 $("fileInput").onchange  = e=>handleFile(e.target.files[0]);
 $("cancelFileBtn").onclick = resetCapture;
+$("cropApply").onclick = applyCrop;
+$("cropSkip").onclick = ()=> setCurrentFromFile(crop.file);
+bindHandles();
 $("analyzeBtn").onclick = ()=>{ if(currentFile) analyze(); };
 $("saveBtn").onclick = save;
 $("cancelFormBtn").onclick = route;
