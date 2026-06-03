@@ -170,6 +170,25 @@
   #cropStage img{display:block; width:100%; height:auto; pointer-events:none}
   #cropOverlay{position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none}
   #cropStage .handle{position:absolute; width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:50%; background:rgba(44,66,102,.4); border:3px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.5); touch-action:none; cursor:grab; z-index:3}
+
+  /* Rapprochement : pleine largeur + table soignée */
+  #screen-reconcile, #tabs.wide{ width:min(94vw,1080px); margin-left:50%; transform:translateX(-50%); }
+  .rec-wrap{ overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:12px; margin-top:8px }
+  table.rec{ width:100%; border-collapse:collapse; font-size:14px; margin:0 }
+  table.rec th, table.rec td{ padding:12px 16px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle }
+  table.rec thead th{ background:var(--bg); color:var(--muted); font-weight:700; font-size:11px; letter-spacing:.5px; text-transform:uppercase }
+  table.rec tbody tr:last-child td{ border-bottom:none }
+  table.rec td.dt{ white-space:nowrap; color:var(--muted); font-variant-numeric:tabular-nums }
+  table.rec td.lib{ max-width:560px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink) }
+  table.rec td.amt{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:600 }
+  table.rec tr.row-ok td{ background:var(--ok-bg) }
+  table.rec tr.row-red td{ background:var(--danger-bg) }
+  table.rec tr.row-yel td{ background:#FBF1CE }
+  .stt{ display:inline-block; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; color:#fff; white-space:nowrap }
+  .stt.ok{ background:var(--ok) } .stt.red{ background:var(--danger) } .stt.yel{ background:#C0902B }
+  .aff-btn{ margin-left:8px; padding:4px 11px; border:1px solid var(--primary); background:#fff; color:var(--primary); border-radius:8px; font-family:"Public Sans"; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap }
+  .aff-btn:hover{ background:var(--primary); color:#fff }
+  .aff-btn:disabled{ opacity:.5; cursor:default }
 </style>
 </head>
 <body>
@@ -426,6 +445,7 @@ function show(screen){
   if(tabs){
     const on = (screen==="capture" || screen==="reconcile");
     tabs.classList.toggle("hidden", !on);
+    tabs.classList.toggle("wide", screen==="reconcile");
     if(on) tabs.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.screen===screen));
   }
   window.scrollTo(0,0);
@@ -915,6 +935,7 @@ function renderCfgStatus(){
 
 /* ---------- Rapprochement bancaire ---------- */
 let depCache = null;
+let lastDebits = [];
 function inRange(iso){ const f=$("rec_from").value, t=$("rec_to").value; return (!f||iso>=f) && (!t||iso<=t); }
 async function loadEtat(){
   $("rec_result").innerHTML = "";
@@ -973,6 +994,7 @@ async function handleBank(file){
     if(!depCache){ const token=await getToken(); const dep=await readDepRange(token); depCache=parseDepRows(dep.values); renderEtat(); }
     const debits = await parseBank(file);
     if(!debits.length){ $("rec_result").innerHTML = '<div class="banner banner-warn">Aucun débit détecté. Vérifie que le fichier contient les colonnes Date / Libellé / Débit.</div>'; return; }
+    lastDebits = debits;
     renderReconcile(debits);
   }catch(e){ $("rec_result").innerHTML = `<div class="banner banner-warn">Erreur : ${escapeHtml(e.message)}</div>`; }
 }
@@ -992,7 +1014,7 @@ function renderReconcile(debits){
   const nRed = items.filter(i=>i.st==="red").length;
   const nYel = items.filter(i=>i.st==="yel").length;
   const nFac = depCache.filter(x=>x.ttc!=null && inRange(x.dateISO)).length;
-  const label = { ok:'<span class="pill ok">Rapproché</span>', red:'<span class="pill warn">À mettre</span>', yel:'<span class="pill yel">Pas encore débité</span>' };
+  const stt = { ok:'<span class="stt ok">Rapproché</span>', red:'<span class="stt red">À mettre</span>', yel:'<span class="stt yel">Pas débité</span>' };
 
   let html =
     `<div class="stat"><span>Factures enregistrées</span><b>${nFac}</b></div>`+
@@ -1000,10 +1022,66 @@ function renderReconcile(debits){
     `<div class="stat"><span><span class="pill warn">Rouge</span> À mettre</span><b>${nRed}</b></div>`+
     `<div class="stat"><span><span class="pill yel">Jaune</span> Pas encore débité</span><b>${nYel}</b></div>`+
     `<div class="rec-h">Détail</div>`+
-    `<table class="rec"><tr><th>Date</th><th>Libellé / Fournisseur</th><th class="amt">Montant</th><th>Statut</th></tr>`;
-  items.forEach(it => html += `<tr class="row-${it.st}"><td>${frDate(it.date)}</td><td>${escapeHtml(it.lib)}</td><td class="amt">${num2fr(it.montant)} €</td><td>${label[it.st]}</td></tr>`);
-  html += `</table>`;
+    `<div class="rec-wrap"><table class="rec"><thead><tr><th>Date</th><th>Libellé / Fournisseur</th><th class="amt">Montant</th><th>Statut</th></tr></thead><tbody>`;
+  items.forEach((it,idx) => {
+    const action = it.st==="red"
+      ? `${stt.red} <button class="aff-btn" data-idx="${idx}">Affecter</button>`
+      : stt[it.st];
+    html += `<tr class="row-${it.st}"><td class="dt">${frDate(it.date)}</td><td class="lib" title="${escapeHtml(it.lib)}">${escapeHtml(it.lib)}</td><td class="amt">${num2fr(it.montant)} €</td><td>${action}</td></tr>`;
+  });
+  html += `</tbody></table></div>`;
   $("rec_result").innerHTML = html;
+  $("rec_result").querySelectorAll(".aff-btn").forEach(b=>{
+    const it = items[+b.dataset.idx];
+    b.onclick = ()=> affecter({ dateISO:it.date, libelle:it.lib, montant:it.montant }, b);
+  });
+}
+
+/* ---------- Affecter un débit du relevé dans le tableau (TTC en jaune) ---------- */
+async function affecter(db, btn){
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "…";
+  try{
+    const token = await getToken();
+    const dep = await readDepRange(token);                 // { sheet, values }
+    // point d'insertion : première ligne sans date en colonne C
+    let target = -1;
+    for(let i=1;i<dep.values.length;i++){
+      const c = (dep.values[i]||[])[0];
+      if(c===null || c===undefined || String(c).trim()===""){ target = i+1; break; }
+    }
+    if(target < 0) target = dep.values.length + 1;
+
+    const who = account ? (account.name || account.username || "") : "";
+    const now = new Date();
+    const stamp = `${pad2(now.getDate())}/${pad2(now.getMonth()+1)}/${now.getFullYear()} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    // C   D       E   F            G   H        I   J   K   L           M     N
+    const vals = [[ frDate(db.dateISO), "Payé", "", db.libelle, "", "Siège", "", "", "", db.montant, who, stamp ]];
+
+    const base = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(dep.sheet)}')`;
+    const w = await fetch(`${base}/range(address='C${target}:N${target}')`, {
+      method:"PATCH",
+      headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+      body: JSON.stringify({ values: vals })
+    });
+    if(!w.ok) throw new Error("Écriture ligne : "+w.status);
+
+    // surligner la cellule TTC (colonne L) en jaune
+    const f = await fetch(`${base}/range(address='L${target}')/format/fill`, {
+      method:"PATCH",
+      headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+      body: JSON.stringify({ color: "#FFE699" })
+    });
+    if(!f.ok) console.warn("Surlignage TTC impossible :", f.status);
+
+    // recharger les dépenses et ré-afficher : la ligne passe au vert
+    const dep2 = await readDepRange(token);
+    depCache = parseDepRows(dep2.values);
+    renderEtat();
+    renderReconcile(lastDebits);
+  }catch(e){
+    alert("Affectation impossible : "+e.message);
+    btn.disabled = false; btn.textContent = old;
+  }
 }
 
 /* ---------- Branchements ---------- */
