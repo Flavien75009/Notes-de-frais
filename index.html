@@ -156,6 +156,10 @@
   .pill{display:inline-block; padding:2px 9px; border-radius:20px; font-size:11px; font-weight:700; margin-left:6px}
   .pill.ok{background:var(--ok-bg); color:#1c4d38}
   .pill.warn{background:var(--danger-bg); color:#7a2e1f}
+  .pill.yel{background:#FBF1CE; color:#7a5a16}
+  table.rec tr.row-ok td{background:var(--ok-bg)}
+  table.rec tr.row-red td{background:var(--danger-bg)}
+  table.rec tr.row-yel td{background:#FBF1CE}
   table.rec{width:100%; border-collapse:collapse; font-size:13px; margin-top:6px}
   table.rec th,table.rec td{text-align:left; padding:8px 6px; border-bottom:1px solid var(--line)}
   table.rec th{color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase}
@@ -821,26 +825,30 @@ async function handleBank(file){
 function renderReconcile(debits){
   const dRange = debits.filter(db=>inRange(db.dateISO));
   const pool = depCache.filter(x=>x.ttc!=null && inRange(x.dateISO)).map(x=>({ ...x, used:false }));
-  let matched=0; const missing=[];
+  const items = [];
   dRange.forEach(db=>{
     const c = pool.find(p=>!p.used && Math.abs(p.ttc-db.montant)<0.01 && Math.abs(dayDiff(p.dateISO,db.dateISO))<=7);
-    if(c){ c.used=true; matched++; } else missing.push(db);
+    if(c){ c.used=true; items.push({ st:"ok",  date:c.dateISO, lib:c.fournisseur, montant:c.ttc }); }
+    else  { items.push({ st:"red", date:db.dateISO, lib:db.libelle,     montant:db.montant }); }
   });
-  const depMissing = pool.filter(p=>!p.used);
+  pool.filter(p=>!p.used).forEach(p=> items.push({ st:"yel", date:p.dateISO, lib:p.fournisseur, montant:p.ttc }));
+  items.sort((a,b)=> a.date<b.date?-1:1);
+
+  const nOk  = items.filter(i=>i.st==="ok").length;
+  const nRed = items.filter(i=>i.st==="red").length;
+  const nYel = items.filter(i=>i.st==="yel").length;
+  const nFac = depCache.filter(x=>x.ttc!=null && inRange(x.dateISO)).length;
+  const label = { ok:'<span class="pill ok">Rapproché</span>', red:'<span class="pill warn">À mettre</span>', yel:'<span class="pill yel">Pas encore débité</span>' };
+
   let html =
-    `<div class="stat"><span>Débits sur la période</span><b>${dRange.length}</b></div>`+
-    `<div class="stat"><span>Rapprochés<span class="pill ok">OK</span></span><b>${matched}</b></div>`+
-    `<div class="stat"><span>Débits sans facture<span class="pill warn">à récupérer</span></span><b>${missing.length}</b></div>`;
-  if(missing.length){
-    html += `<div class="rec-h">Débits sans facture</div><table class="rec"><tr><th>Date</th><th>Libellé</th><th class="amt">Montant</th></tr>`;
-    missing.sort((a,b)=>a.dateISO<b.dateISO?-1:1).forEach(m=> html += `<tr><td>${frDate(m.dateISO)}</td><td>${escapeHtml(m.libelle)}</td><td class="amt">${num2fr(m.montant)} €</td></tr>`);
-    html += `</table>`;
-  }
-  if(depMissing.length){
-    html += `<div class="rec-h">Factures sans débit correspondant</div><table class="rec"><tr><th>Date</th><th>Fournisseur</th><th class="amt">TTC</th></tr>`;
-    depMissing.sort((a,b)=>a.dateISO<b.dateISO?-1:1).forEach(m=> html += `<tr><td>${frDate(m.dateISO)}</td><td>${escapeHtml(m.fournisseur)}</td><td class="amt">${num2fr(m.ttc)} €</td></tr>`);
-    html += `</table>`;
-  }
+    `<div class="stat"><span>Factures enregistrées</span><b>${nFac}</b></div>`+
+    `<div class="stat"><span><span class="pill ok">Vert</span> Rapprochés</span><b>${nOk}</b></div>`+
+    `<div class="stat"><span><span class="pill warn">Rouge</span> À mettre</span><b>${nRed}</b></div>`+
+    `<div class="stat"><span><span class="pill yel">Jaune</span> Pas encore débité</span><b>${nYel}</b></div>`+
+    `<div class="rec-h">Détail</div>`+
+    `<table class="rec"><tr><th>Date</th><th>Libellé / Fournisseur</th><th class="amt">Montant</th><th>Statut</th></tr>`;
+  items.forEach(it => html += `<tr class="row-${it.st}"><td>${frDate(it.date)}</td><td>${escapeHtml(it.lib)}</td><td class="amt">${num2fr(it.montant)} €</td><td>${label[it.st]}</td></tr>`);
+  html += `</table>`;
   $("rec_result").innerHTML = html;
 }
 
