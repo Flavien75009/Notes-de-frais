@@ -255,12 +255,6 @@
           </div>
         </div>
 
-        <div class="switch">
-          <div><span>Justificatif à récupérer en ligne</span>
-            <small>Abonnement type Google, Claude… (colonne « Oui »)</small></div>
-          <label class="toggle"><input type="checkbox" id="f_recup" /><span class="track"></span><span class="knob"></span></label>
-        </div>
-
         <button class="btn btn-ok" id="saveBtn"><span class="ico">💾</span> Enregistrer</button>
         <button class="link" id="cancelFormBtn" style="display:block;margin:14px auto 0">Annuler</button>
       </div>
@@ -341,6 +335,8 @@ const GRAPH = "https://graph.microsoft.com/v1.0";
 let pca, account = null;
 let currentFile = null;        // { blob, name, mime, base64 }
 let extracted = {};            // résultat du relais
+let RUBRIQUES = CONFIG.rubriques.slice();   // rubriques : Excel onglet « filtres », sinon liste par défaut
+let rubriquesLoaded = false;
 
 /* ---------- Utilitaires ---------- */
 const $ = id => document.getElementById(id);
@@ -359,7 +355,7 @@ function isoToFr(d){ if(!d) return ""; const p=String(d).slice(0,10).split("-");
 function frYear(d){ const m=String(d).match(/(\d{4})/); return m?m[1]:new Date().getFullYear(); }
 function sanitize(s){ return String(s||"").replace(/[\\/:*?"<>|]/g,"-").replace(/\s+/g," ").trim(); }
 
-/* ---------- Authentification ---------- */
+/* ---------- Authentification (redirection : compatible mobile) ---------- */
 async function initAuth(){
   pca = new msal.PublicClientApplication({
     auth:{
@@ -370,19 +366,21 @@ async function initAuth(){
     cache:{ cacheLocation:"localStorage" }
   });
   await pca.initialize();
-  const accts = pca.getAllAccounts();
-  if(accts.length){ account = accts[0]; pca.setActiveAccount(account); }
+  try{
+    const resp = await pca.handleRedirectPromise();   // récupère le retour de connexion
+    if(resp && resp.account){ account = resp.account; pca.setActiveAccount(account); }
+  }catch(e){ console.warn("redirect", e); }
+  if(!account){ const a = pca.getAllAccounts(); if(a.length){ account = a[0]; pca.setActiveAccount(account); } }
   renderUser();
 }
-async function signIn(){
-  const res = await pca.loginPopup({ scopes:["User.Read","Files.ReadWrite.All"] });
-  account = res.account; pca.setActiveAccount(account);
-  renderUser(); route();
+function signIn(){
+  // Redirection vers Microsoft puis retour automatique — pas de pop-up bloquée sur mobile
+  return pca.loginRedirect({ scopes:["User.Read","Files.ReadWrite.All"] });
 }
-function signOut(){ if(account) pca.logoutPopup({ account }); }
+function signOut(){ if(account) pca.logoutRedirect({ account }); }
 async function getToken(){
   try{ const r = await pca.acquireTokenSilent({ scopes:["Files.ReadWrite.All"], account }); return r.accessToken; }
-  catch(e){ const r = await pca.acquireTokenPopup({ scopes:["Files.ReadWrite.All"] }); return r.accessToken; }
+  catch(e){ pca.acquireTokenRedirect({ scopes:["Files.ReadWrite.All"] }); throw new Error("Reconnexion nécessaire"); }
 }
 function renderUser(){
   if(account){
@@ -391,10 +389,27 @@ function renderUser(){
   } else $("userZone").innerHTML = "";
 }
 
+/* ---------- Rubriques depuis l'Excel (onglet « filtres », A3:A30) ---------- */
+async function loadRubriques(){
+  try{
+    const token = await getToken();
+    const wsr = await fetch(`${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets`, { headers:{ "Authorization":"Bearer "+token } });
+    if(!wsr.ok) return;
+    const sheets = (await wsr.json()).value || [];
+    const sheet = sheets.find(s => (s.name||"").toLowerCase() === "filtres");
+    if(!sheet) return;
+    const rr = await fetch(`${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(sheet.name)}')/range(address='A3:A30')`, { headers:{ "Authorization":"Bearer "+token } });
+    if(!rr.ok) return;
+    const vals = ((await rr.json()).values || []).map(row => String(row[0]||"").trim()).filter(Boolean);
+    if(vals.length) RUBRIQUES = vals;
+  }catch(e){ /* on garde la liste par défaut */ }
+}
+
 /* ---------- Routage des écrans ---------- */
 function route(){
   if(!account){ show("login"); return; }
   if(!isConfigured()){ show("config"); return; }
+  if(!rubriquesLoaded){ rubriquesLoaded = true; loadRubriques(); }
   resetCapture(); show("capture");
 }
 
@@ -436,9 +451,9 @@ async function analyze(){
 
 /* ---------- Remplissage du formulaire ---------- */
 function fillForm(){
-  // rubriques
+  // rubriques (chargées depuis l'onglet « filtres » de l'Excel, sinon liste par défaut)
   const sel = $("f_categorie");
-  sel.innerHTML = '<option value="">— choisir —</option>' + CONFIG.rubriques.map(r=>`<option>${r}</option>`).join("");
+  sel.innerHTML = '<option value="">— choisir —</option>' + RUBRIQUES.map(r=>`<option>${r}</option>`).join("");
   // bandeau
   const b = $("analyzeBanner");
   if(extracted._error) b.innerHTML = `<div class="banner banner-warn">⚠️ Lecture automatique impossible (${extracted._error}). Saisis les champs à la main.</div>`;
@@ -454,11 +469,27 @@ function fillForm(){
   $("f_categorie").value = "";
   $("f_lieu").value = CONFIG.lieuParDefaut;
   $("f_statut").value = CONFIG.statutParDefaut;
-  $("f_recup").checked = false;
 }
 
 /* recalcule l'année quand la date change */
 $("f_date") && $("f_date").addEventListener("input", e=>{ const y=frYear(e.target.value); if(y) $("f_annee").value=y; });
+
+/* ---------- Calcul automatique HT / TVA / TTC ---------- */
+const round2 = x => Math.round(x*100)/100;
+function recalc(source){
+  const ht = fr2num($("f_ht").value), tva = fr2num($("f_tva").value), ttc = fr2num($("f_ttc").value);
+  if(source==="ht"){
+    if(ttc!=null && ht!=null)      $("f_tva").value = num2fr(round2(ttc - ht));   // HT saisi + TTC connu → TVA
+    else if(tva!=null && ht!=null) $("f_ttc").value = num2fr(round2(ht + tva));   // HT + TVA → TTC
+  } else if(source==="ttc"){
+    if(ht!=null && ttc!=null)      $("f_tva").value = num2fr(round2(ttc - ht));   // TTC modifié → TVA
+  } else if(source==="tva"){
+    if(ht!=null && tva!=null)      $("f_ttc").value = num2fr(round2(ht + tva));   // TVA modifiée → TTC
+  }
+}
+$("f_ht")  && $("f_ht").addEventListener("input",  ()=>recalc("ht"));
+$("f_ttc") && $("f_ttc").addEventListener("input", ()=>recalc("ttc"));
+$("f_tva") && $("f_tva").addEventListener("input", ()=>recalc("tva"));
 
 /* ---------- Enregistrement (OneDrive + Excel) ---------- */
 function collectData(){
@@ -466,7 +497,7 @@ function collectData(){
     annee: $("f_annee").value.trim(),
     date: $("f_date").value.trim(),
     statut: $("f_statut").value,
-    recup: $("f_recup").checked ? "Oui" : "",
+    recup: "",
     fournisseur: $("f_fournisseur").value.trim(),
     designation: $("f_designation").value.trim(),
     lieu: $("f_lieu").value.trim(),
@@ -496,7 +527,10 @@ async function save(){
     const token = await getToken();
     const ext = (currentFile.name.split(".").pop()||"").toLowerCase();
     const safeExt = (ext && ext.length<=4) ? ext : (currentFile.mime==="application/pdf"?"pdf":"jpg");
-    const fileName = sanitize(`${d.date.replace(/\//g,"-")}_${d.fournisseur}_${num2fr(d.ttc)||""}`).slice(0,80)+"."+safeExt;
+    // Nom du fichier : AAMMJJ - Fournisseur - Description
+    const p = d.date.split("/");   // JJ/MM/AAAA
+    const aammjj = (p.length===3) ? (p[2].slice(2) + p[1].padStart(2,"0") + p[0].padStart(2,"0")) : "000000";
+    const fileName = sanitize(`${aammjj} - ${d.fournisseur} - ${d.designation}`).slice(0,90) + "." + safeExt;
 
     // 1) Upload du PDF / image dans le dossier partagé
     const upUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.folderId}:/${encodeURIComponent(fileName)}:/content`;
