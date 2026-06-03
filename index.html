@@ -189,6 +189,8 @@
   .aff-btn{ margin-left:8px; padding:4px 11px; border:1px solid var(--primary); background:#fff; color:var(--primary); border-radius:8px; font-family:"Public Sans"; font-weight:700; font-size:12px; cursor:pointer; white-space:nowrap }
   .aff-btn:hover{ background:var(--primary); color:#fff }
   .aff-btn:disabled{ opacity:.5; cursor:default }
+  .aff-btn.imp{ border-color:var(--danger); color:var(--danger) }
+  .aff-btn.imp:hover{ background:var(--danger); color:#fff }
 </style>
 </head>
 <body>
@@ -998,14 +1000,28 @@ async function handleBank(file){
     renderReconcile(debits);
   }catch(e){ $("rec_result").innerHTML = `<div class="banner banner-warn">Erreur : ${escapeHtml(e.message)}</div>`; }
 }
+let affected = new Set();
+function affKey(d){ return normDate(d.dateISO)+"|"+Number(d.montant).toFixed(2)+"|"+(d.libelle||d.lib||""); }
+
 function renderReconcile(debits){
   const dRange = debits.filter(db=>inRange(db.dateISO));
   const pool = depCache.filter(x=>x.ttc!=null && inRange(x.dateISO)).map(x=>({ ...x, used:false }));
   const items = [];
-  dRange.forEach(db=>{
+  const done = new Array(dRange.length).fill(false);
+  // passe 1 : débits déjà affectés -> vert (et on consomme la ligne créée)
+  dRange.forEach((db,i)=>{
+    if(!affected.has(affKey(db))) return;
+    const c = pool.find(p=>!p.used && p.fournisseur===db.libelle && Math.abs(p.ttc-db.montant)<0.01);
+    if(c) c.used=true;
+    done[i]=true;
+    items.push({ st:"ok", date:db.dateISO, lib:db.libelle, montant:db.montant });
+  });
+  // passe 2 : appariement normal (montant ±0,01 € et date ±7 j)
+  dRange.forEach((db,i)=>{
+    if(done[i]) return;
     const c = pool.find(p=>!p.used && Math.abs(p.ttc-db.montant)<0.01 && Math.abs(dayDiff(p.dateISO,db.dateISO))<=7);
-    if(c){ c.used=true; items.push({ st:"ok",  date:c.dateISO, lib:c.fournisseur, montant:c.ttc }); }
-    else  { items.push({ st:"red", date:db.dateISO, lib:db.libelle,     montant:db.montant }); }
+    if(c){ c.used=true; items.push({ st:"ok", date:c.dateISO, lib:c.fournisseur, montant:c.ttc }); }
+    else   items.push({ st:"red", date:db.dateISO, lib:db.libelle, montant:db.montant });
   });
   pool.filter(p=>!p.used).forEach(p=> items.push({ st:"yel", date:p.dateISO, lib:p.fournisseur, montant:p.ttc }));
   items.sort((a,b)=> a.date<b.date?-1:1);
@@ -1025,7 +1041,7 @@ function renderReconcile(debits){
     `<div class="rec-wrap"><table class="rec"><thead><tr><th>Date</th><th>Libellé / Fournisseur</th><th class="amt">Montant</th><th>Statut</th></tr></thead><tbody>`;
   items.forEach((it,idx) => {
     const action = it.st==="red"
-      ? `${stt.red} <button class="aff-btn" data-idx="${idx}">Affecter</button>`
+      ? `${stt.red} <button class="aff-btn" data-idx="${idx}" data-act="aff">Affecter</button> <button class="aff-btn imp" data-idx="${idx}" data-act="imp">Impôts</button>`
       : stt[it.st];
     html += `<tr class="row-${it.st}"><td class="dt">${frDate(it.date)}</td><td class="lib" title="${escapeHtml(it.lib)}">${escapeHtml(it.lib)}</td><td class="amt">${num2fr(it.montant)} €</td><td>${action}</td></tr>`;
   });
@@ -1033,13 +1049,19 @@ function renderReconcile(debits){
   $("rec_result").innerHTML = html;
   $("rec_result").querySelectorAll(".aff-btn").forEach(b=>{
     const it = items[+b.dataset.idx];
-    b.onclick = ()=> affecter({ dateISO:it.date, libelle:it.lib, montant:it.montant }, b);
+    const db = { dateISO:it.date, libelle:it.lib, montant:it.montant };
+    b.onclick = ()=> (b.dataset.act==="imp")
+      ? affecter(db, b, { rubrique:"Impôts", fontColor:"#C00000" })   // Impôts : montant en rouge
+      : affecter(db, b, { fillColor:"#FFE699" });                     // Affecter : TTC fond jaune
   });
 }
 
-/* ---------- Affecter un débit du relevé dans le tableau (TTC en jaune) ---------- */
-async function affecter(db, btn){
-  btn.disabled = true; const old = btn.textContent; btn.textContent = "…";
+/* ---------- Affecter un débit du relevé dans le tableau ---------- */
+async function affecter(db, btn, opt){
+  opt = opt || {};
+  // on neutralise les deux boutons de la ligne pendant le traitement
+  const row = btn.closest("tr"); if(row) row.querySelectorAll(".aff-btn").forEach(x=>x.disabled=true);
+  const old = btn.textContent; btn.textContent = "…";
   try{
     const token = await getToken();
     const dep = await readDepRange(token);                 // { sheet, values }
@@ -1054,8 +1076,8 @@ async function affecter(db, btn){
     const who = account ? (account.name || account.username || "") : "";
     const now = new Date();
     const stamp = `${pad2(now.getDate())}/${pad2(now.getMonth()+1)}/${now.getFullYear()} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
-    // C   D       E   F            G   H        I   J   K   L           M     N
-    const vals = [[ frDate(db.dateISO), "Payé", "", db.libelle, "", "Siège", "", "", "", db.montant, who, stamp ]];
+    // C                 D       E   F          G   H        I(rubrique)        J   K   L           M     N
+    const vals = [[ frDate(db.dateISO), "Payé", "", db.libelle, "", "Siège", opt.rubrique||"", "", "", db.montant, who, stamp ]];
 
     const base = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(dep.sheet)}')`;
     const w = await fetch(`${base}/range(address='C${target}:N${target}')`, {
@@ -1065,22 +1087,31 @@ async function affecter(db, btn){
     });
     if(!w.ok) throw new Error("Écriture ligne : "+w.status);
 
-    // surligner la cellule TTC (colonne L) en jaune
-    const f = await fetch(`${base}/range(address='L${target}')/format/fill`, {
-      method:"PATCH",
-      headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
-      body: JSON.stringify({ color: "#FFE699" })
-    });
-    if(!f.ok) console.warn("Surlignage TTC impossible :", f.status);
+    // mise en forme de la cellule TTC (colonne L)
+    if(opt.fillColor){
+      const f = await fetch(`${base}/range(address='L${target}')/format/fill`, {
+        method:"PATCH", headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+        body: JSON.stringify({ color: opt.fillColor })
+      });
+      if(!f.ok) console.warn("Surlignage TTC impossible :", f.status);
+    }
+    if(opt.fontColor){
+      const ft = await fetch(`${base}/range(address='L${target}')/format/font`, {
+        method:"PATCH", headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
+        body: JSON.stringify({ color: opt.fontColor })
+      });
+      if(!ft.ok) console.warn("Couleur montant impossible :", ft.status);
+    }
 
-    // recharger les dépenses et ré-afficher : la ligne passe au vert
-    const dep2 = await readDepRange(token);
-    depCache = parseDepRows(dep2.values);
+    // mise à jour immédiate en mémoire : la ligne passe au vert, sans relecture Excel
+    depCache.push({ dateISO: db.dateISO, fournisseur: db.libelle, designation: opt.rubrique||"", ttc: db.montant });
+    affected.add(affKey(db));
     renderEtat();
     renderReconcile(lastDebits);
   }catch(e){
     alert("Affectation impossible : "+e.message);
-    btn.disabled = false; btn.textContent = old;
+    if(row) row.querySelectorAll(".aff-btn").forEach(x=>x.disabled=false);
+    btn.textContent = old;
   }
 }
 
