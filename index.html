@@ -686,10 +686,13 @@ async function save(){
       body: uploadBlob });
     if(!up.ok) throw new Error("Dépôt OneDrive : "+up.status);
 
-    // 3) Écriture de la ligne dans les colonnes C → L
+    // 3) Écriture de la ligne dans les colonnes C → N
+    const who = account ? (account.name || account.username || "") : "";
+    const now = new Date();
+    const stamp = `${pad2(now.getDate())}/${pad2(now.getMonth()+1)}/${now.getFullYear()} ${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
     const vals = [[ d.date, d.statut, "", d.fournisseur, d.designation, d.lieu, d.categorie,
-                    d.ht==null?"":d.ht, d.tva==null?"":d.tva, d.ttc==null?"":d.ttc ]];
-    const wUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(dep.sheet)}')/range(address='C${target}:L${target}')`;
+                    d.ht==null?"":d.ht, d.tva==null?"":d.tva, d.ttc==null?"":d.ttc, who, stamp ]];
+    const wUrl = `${GRAPH}/drives/${CONFIG.driveId}/items/${CONFIG.workbookId}/workbook/worksheets('${encodeURIComponent(dep.sheet)}')/range(address='C${target}:N${target}')`;
     const r = await fetch(wUrl, { method:"PATCH",
       headers:{ "Authorization":"Bearer "+token, "Content-Type":"application/json" },
       body: JSON.stringify({ values: vals }) });
@@ -701,6 +704,8 @@ async function save(){
       <div><span>Fournisseur</span><b>${d.fournisseur}</b></div>
       <div><span>HT / TVA / TTC</span><b>${num2fr(d.ht)} / ${num2fr(d.tva)} / ${num2fr(d.ttc)} €</b></div>
       <div><span>Rubrique</span><b>${d.categorie}</b></div>
+      <div><span>Saisi par</span><b>${escapeHtml(who)}</b></div>
+      <div><span>Déposé le</span><b>${stamp}</b></div>
       <div><span>Fichier</span><b>${fileName}</b></div>`;
     show("done");
   }catch(e){
